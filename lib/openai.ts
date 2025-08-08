@@ -14,10 +14,10 @@ export const supabaseAdmin = createClient(
 
 // -------------------- Model presets --------------------
 export const MODELS = {
-  BLIP_TEXT: 'gpt-5-mini',      // main blip script
+  BLIP_TEXT: 'gpt-5-mini',      // main blip script (balanced quality/cost)
   BLIP_SUMMARY: 'gpt-5-nano',   // bullets + search blurbs
-  TTS: process.env.TTS_MODEL || 'gpt-4o-mini-tts', // or 'tts-1' / 'tts-1-hd'
-  REALTIME: 'gpt-4o-realtime-preview-2024-12-17',  // keep 4o realtime for now
+  TTS: process.env.TTS_MODEL || 'tts-1-hd', // 'tts-1' for crisper/less smooth
+  REALTIME: 'gpt-4o-realtime-preview-2024-12-17', // keep 4o realtime for now
 };
 
 // -------------------- Types --------------------
@@ -52,7 +52,6 @@ function nowInTZ(tz?: string) {
   }).formatToParts(d);
 
   const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? '0');
-
   const year = get('year');
   const month = get('month');
   const day = get('day');
@@ -70,31 +69,43 @@ function ymd(d = new Date()) {
   return `${yr}-${mo}-${da}`;
 }
 
+// Prosody shaping for TTS (clearer, more energetic without yelling)
 function humanizeForVoice(text: string) {
-  return text.replace(/\s+/g, ' ').replace(/%/g, ' percent').trim();
+  // Normalize whitespace
+  let t = text.replace(/\s+/g, ' ').trim();
+
+  // Numbers → friendlier read
+  t = t
+    .replace(/\b(\d{1,2})%/g, (_, n) => `${n} percent`)
+    .replace(/\b(\d{1,3})(?:,(\d{3})){1,3}\b/g, (m) => m.replace(/,/g, ''));
+
+  // Micro-transitions → audible pause
+  t = t.replace(
+    /\b(quick pivot|meanwhile|one more thing|zooming out|on a different note)\b[:,]?\s*/gi,
+    (m) => m.replace(/[:,]?$/, ' — ')
+  );
+
+  // Encourage breathing room: keep paragraph breaks meaningful
+  t = t.replace(/\n{2,}/g, '\n\n');
+
+  // Replace slashes with em-dashes (reads cleaner)
+  t = t.replace(/\s\/\s/g, ' — ');
+
+  return t;
 }
 
 // -------------------- marketsNow --------------------
-/** Lightweight NYSE open/closed guess (no holiday logic). */
+/** Lightweight NYSE open/closed (no holiday logic). */
 export async function marketsNow() {
   const tz = 'America/New_York';
   const d = nowInTZ(tz);
 
-  const hour = Number(
-    new Intl.DateTimeFormat('en-US', { hour: '2-digit', hour12: false, timeZone: tz }).format(d)
-  );
-  const minute = Number(
-    new Intl.DateTimeFormat('en-US', { minute: '2-digit', hour12: false, timeZone: tz }).format(d)
-  );
-  const weekday = Number(
-    new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz })
-      .format(d)
-      .match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/) ? 1 : 0 // dummy use to avoid ts complaints
-  );
-  const jsDay = new Date(d.toISOString()).getUTCDay(); // fine for "now" checks
-  const mins = hour * 60 + minute;
+  const hour = Number(new Intl.DateTimeFormat('en-US', { hour: '2-digit', hour12: false, timeZone: tz }).format(d));
+  const minute = Number(new Intl.DateTimeFormat('en-US', { minute: '2-digit', hour12: false, timeZone: tz }).format(d));
+  const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(d); // Mon..Sun
 
-  const isWeekend = jsDay === 0 || jsDay === 6;
+  const mins = hour * 60 + minute;
+  const isWeekend = weekday === 'Sat' || weekday === 'Sun';
   // 9:30–16:00 ET = 570..960
   const isOpen = !isWeekend && mins >= 570 && mins <= 960;
 
@@ -104,7 +115,7 @@ export async function marketsNow() {
 // -------------------- webSearchSummary --------------------
 /**
  * Minimal neutral summary. Accepts { query, maxChars? }.
- * Swap this later for a real search+grounding step.
+ * Swap later for a real search+grounding step.
  */
 export async function webSearchSummary(arg: { query: string; maxChars?: number }) {
   const query = (arg?.query || '').trim();
@@ -140,15 +151,30 @@ export async function buildBlipScript(opts: BuildBlipOpts = {}): Promise<BuildBl
   const { summary: headlines } = await webSearchSummary({ query: `Top headlines ${region}`, maxChars: 200 });
   const mkt = await marketsNow();
 
+  // Friend-style, slightly more energetic voice note prompt
   const prompt = [
-    `Write a 60–90 second spoken morning brief for a general audience in ${region}.`,
+    `Write a 60–90 second spoken “morning voice note” for a friend in ${region}.`,
     `Date: ${dateStr} (local to ${tz}).`,
-    `Headlines context (optional): ${headlines || 'generic headlines'}.`,
+    `Context (if vague, keep it generic; avoid guessing): ${headlines || 'general headlines'}.`,
     `Market status: NYSE is ${mkt.open ? 'open' : 'closed'} (hours ${mkt.window} ET).`,
-    `Constraints:`,
-    `- Conversational, calm, concise. Avoid hype and speculation.`,
-    `- If context is vague, keep it general and avoid fabricating specifics.`,
-    `- End with a single quick fact.`,
+
+    `Voice & Energy:`,
+    `- Male-presenting narrator, warm and confident.`,
+    `- Energy 6/10: engaged and upbeat, never shouty.`,
+    `- Natural, conversational delivery—like a smart friend leaving a voice memo.`,
+
+    `Structure:`,
+    `- 1-line hook that sets the vibe of the day.`,
+    `- 2–4 tight segments. Use transitions like “quick pivot —”, “meanwhile —”, “one more thing —”.`,
+    `- If markets closed, mention what’s next or a quick watch item.`,
+    `- Close with a crisp one-line sign-off (no calls to like/subscribe).`,
+
+    `Style rules:`,
+    `- Short sentences and varied cadence. Read-aloud friendly.`,
+    `- Use commas, em dashes —, and the occasional ellipsis … for natural pauses.`,
+    `- Prefer “about 3 million” over exact long numbers.`,
+    `- Use smart transitions from topic to topic, such as "now lets look into markets".`,
+    `- No emojis. No filler. No speculation.`,
   ].join('\n');
 
   const resp = await openai.responses.create({
@@ -180,21 +206,37 @@ export async function deriveWrittenSummary(script: string) {
 }
 
 // -------------------- ttsMp3 --------------------
-/** TTS to MP3 and upload to Supabase Storage. Returns { url, path }. */
+/**
+ * TTS to MP3 and upload to Supabase Storage.
+ * Tries preferred voice, then fallbacks (onyx → echo → alloy).
+ * Returns { url, path } to the uploaded object (tmp/* path).
+ */
 export async function ttsMp3(text: string, voice = process.env.TTS_VOICE || 'alloy') {
   const shaped = humanizeForVoice(text);
-
-  const speech = await openai.audio.speech.create({
-    model: MODELS.TTS,            // 'gpt-4o-mini-tts' or 'tts-1' / 'tts-1-hd'
-    voice: String(voice),
-    input: shaped,
-    response_format: 'mp3',       // NOTE: current SDK uses response_format
-  });
-
-  const arrBuf = await speech.arrayBuffer();
-
   const bucket = process.env.SUPABASE_BUCKET || 'blip';
   const key = `tmp/${ymd()}/audio-${Date.now()}.mp3`;
+
+  const candidates = [String(voice), 'onyx', 'echo', 'alloy'];
+  let arrBuf: ArrayBuffer | null = null;
+  let lastErr: any = null;
+
+  for (const v of candidates) {
+    try {
+      const speech = await openai.audio.speech.create({
+        model: MODELS.TTS, // 'tts-1-hd' (smooth, natural) or 'tts-1' (crisper)
+        voice: v,
+        input: shaped,
+        response_format: 'mp3',
+      });
+      arrBuf = await speech.arrayBuffer();
+      break;
+    } catch (err) {
+      lastErr = err;
+      continue;
+    }
+  }
+
+  if (!arrBuf) throw lastErr || new Error('TTS failed for all candidate voices');
 
   const { error } = await supabaseAdmin.storage
     .from(bucket)

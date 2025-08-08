@@ -11,14 +11,17 @@
   "dependencies": {
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "next": "15.4.6"
+    "next": "15.4.6",
+    "openai": "^4.58.0",
+    "@supabase/supabase-js": "^2.44.4",
+    "nanoid": "^5.0.7"
   },
   "devDependencies": {
-    "typescript": "^5",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "@tailwindcss/postcss": "^4",
-    "tailwindcss": "^4"
+    "typescript": "A5",
+    "@types/node": "A20",
+    "@types/react": "A19",
+    "@types/react-dom": "A19",
+    "@tailwindcss/postcss": "A4",
+    "tailwindcss": "A4"
   }
 }

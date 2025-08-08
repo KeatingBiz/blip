@@ -1,82 +1,180 @@
-import { NextResponse } from 'next/server';
+// app/api/cron/prep-cohorts/route.ts
+import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { buildBlipScript, deriveWrittenSummary, ttsMp3 } from '../../../../lib/openai';
-import { todayKeyTZ } from '../../../../lib/dates';
-import { tzBucket, bucketAnchorTz, type Bucket, allBuckets } from '../../../../lib/tzbuckets';
+import { buildBlipScript, deriveWrittenSummary, ttsMp3 } from '@/lib/openai';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs'; // use Node (not Edge) so Buffer & supabase-js work
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+// ---- Supabase admin client ----
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
 const BUCKET = process.env.SUPABASE_BUCKET || 'blip';
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+// ---- Types / Regions ----
+type RegionBucket =
+  | 'us_atlantic' | 'us_east' | 'us_central' | 'us_mountain' | 'us_arizona'
+  | 'us_pacific' | 'us_alaska' | 'us_aleutian' | 'us_hawaii'
+  | 'europe' | 'apac';
 
-export async function POST(req: Request) {
+const REGION_TZ: Record<RegionBucket, string> = {
+  us_atlantic: 'America/Halifax',
+  us_east: 'America/New_York',
+  us_central: 'America/Chicago',
+  us_mountain: 'America/Denver',
+  us_arizona: 'America/Phoenix',
+  us_pacific: 'America/Los_Angeles',
+  us_alaska: 'America/Anchorage',
+  us_aleutian: 'America/Adak',
+  us_hawaii: 'Pacific/Honolulu',
+  europe: 'Europe/London',
+  apac: 'Asia/Singapore',
+};
+
+// ---- Helpers ----
+function ymdInTZ(tz: string): string {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+
+  const year = parts.find(p => p.type === 'year')?.value || '1970';
+  const month = parts.find(p => p.type === 'month')?.value || '01';
+  const day = parts.find(p => p.type === 'day')?.value || '01';
+
+  return `${year}-${month}-${day}`;
+}
+
+function publicUrl(path: string) {
+  return supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+}
+
+async function objectExists(prefix: string, name: string) {
+  const { data } = await supabase.storage.from(BUCKET).list(prefix, {
+    limit: 100,
+    offset: 0,
+    sortBy: { column: 'name', order: 'asc' },
+    search: name,
+  });
+  return (data || []).some(f => f.name === name);
+}
+
+async function safeRemove(paths: string[]) {
+  if (!paths.length) return;
+  await supabase.storage.from(BUCKET).remove(paths); // ignore not-found
+}
+
+// ---- Route ----
+export async function GET(req: NextRequest) {
   try {
-    const url = new URL(req.url);
-    const b = url.searchParams.get('bucket') as Bucket | null;
+    const { searchParams } = new URL(req.url);
+    const raw = (searchParams.get('bucket') || '').trim().toLowerCase();
+    const force = searchParams.get('force') === '1';
 
-    if (!b) {
-      return new NextResponse(
-        JSON.stringify({ error: `Missing ?bucket=…  Allowed: ${allBuckets().join(', ')}` }),
-        { status: 400, headers: { 'content-type': 'application/json' } }
-      );
-    }
-    if (!allBuckets().includes(b)) {
-      return new NextResponse(
-        JSON.stringify({ error: `Invalid bucket. Allowed: ${allBuckets().join(', ')}` }),
-        { status: 400, headers: { 'content-type': 'application/json' } }
-      );
+    if (!raw) {
+      return new Response(JSON.stringify({ ok: false, error: 'Missing ?bucket=' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
     }
 
-    const anchorTz = bucketAnchorTz(b);
-    const ymd = todayKeyTZ(anchorTz);
-    const cohortKey = `free:${b}:${ymd}`;
+    // Treat unknown values as string; timezone fallback covers us.
+    const bucket = raw as RegionBucket;
+    const tz = REGION_TZ[bucket] || process.env.BLIP_TZ || 'America/Chicago';
 
-    // Already exists?
-    const { data: existing, error: selErr } = await supabase
-      .from('blips')
-      .select('id,audio_url,script,summary,cohort_key')
-      .eq('cohort_key', cohortKey)
-      .maybeSingle();
-    if (selErr) throw selErr;
-    if (existing) {
-      return NextResponse.json({ ok: true, cohortKey, audioUrl: existing.audio_url, cached: true });
+    const ymd = ymdInTZ(tz);
+    const dir = `cohorts/${bucket}/${ymd}`;
+    const audioName = 'free.mp3';
+    const jsonName = 'free.json';
+    const audioPath = `${dir}/${audioName}`;
+    const jsonPath = `${dir}/${jsonName}`;
+
+    // If we already prewarmed today’s asset (and not forcing), return it.
+    if (!force) {
+      const hasAudio = await objectExists(dir, audioName);
+      if (hasAudio) {
+        const hasJson = await objectExists(dir, jsonName);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            cached: true,
+            region: bucket,
+            tz,
+            ymd,
+            audioUrl: publicUrl(audioPath),
+            textUrl: hasJson ? publicUrl(jsonPath) : null,
+          }),
+          { headers: { 'content-type': 'application/json' } }
+        );
+      }
     }
 
-    // Generate
-    const script = await buildBlipScript({ topics: ['top','markets','world'] });
-    const summary = await deriveWrittenSummary(script);
-    const audioBuf = await ttsMp3(script, 'verse');
+    // Generate fresh (NOTE: no `topics` prop — BuildBlipOpts is { tz?, region? }).
+    const { script } = await buildBlipScript({ tz, region: bucket });
+    const { summary } = await deriveWrittenSummary(script);
 
-    // Upload with bucket in path
-    const objectPath = `cohorts/${b}/${ymd}/free.mp3`;
-    const { error: upErr } = await supabase.storage.from(BUCKET).upload(objectPath, audioBuf, {
-      contentType: 'audio/mpeg', upsert: true,
-    });
-    if (upErr) throw upErr;
-
-    const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(objectPath);
-    const audioUrl = pub?.publicUrl;
-
-    // Save row
-    const { error: insErr } = await supabase.from('blips').insert({
-      cohort_key: cohortKey,
-      date: ymd,
-      audio_url: audioUrl,
+    // TTS uploads to tmp/* and returns { url, path }
+    const { url: tmpUrl, path: tmpPath } = await ttsMp3(
       script,
-      summary,
-    });
-    if (insErr) throw insErr;
+      process.env.TTS_VOICE || 'verse'
+    );
 
-    return NextResponse.json({ ok: true, cohortKey, audioUrl, cached: false });
+    // Move audio to canonical cohort path
+    await safeRemove([audioPath]); // clear any prior file
+    let moved = false;
+    const storage: any = supabase.storage.from(BUCKET);
+    const moveRes = await storage.move(tmpPath, audioPath);
+    if (!moveRes?.error) {
+      moved = true;
+    } else {
+      // Fallback: copy then remove tmp
+      const copyRes = await storage.copy(tmpPath, audioPath);
+      if (!copyRes?.error) {
+        await safeRemove([tmpPath]);
+        moved = true;
+      }
+    }
+
+    // Upload summary JSON (as bytes to satisfy types)
+    const jsonBody = JSON.stringify(
+      { script, summary, meta: { tz, region: bucket, date: ymd } },
+      null,
+      2
+    );
+    await supabase.storage.from(BUCKET).upload(
+      jsonPath,
+      Buffer.from(jsonBody, 'utf-8'),
+      {
+        contentType: 'application/json',
+        cacheControl: '3600',
+        upsert: true,
+      }
+    );
+
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        cached: false,
+        region: bucket,
+        tz,
+        ymd,
+        audioUrl: moved ? publicUrl(audioPath) : tmpUrl, // fallback to tmp if move failed
+        textUrl: publicUrl(jsonPath),
+      }),
+      { headers: { 'content-type': 'application/json' } }
+    );
   } catch (err: any) {
-    console.error('CRON_PREP_ERROR', err?.message, err?.stack);
-    return new NextResponse(JSON.stringify({ error: String(err?.message || err) }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-    });
+    console.error('[cron/prep-cohorts] error', err);
+    return new Response(
+      JSON.stringify({ ok: false, error: err?.message || 'Unexpected error' }),
+      { status: 500, headers: { 'content-type': 'application/json' } }
+    );
   }
 }
+

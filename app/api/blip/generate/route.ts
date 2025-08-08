@@ -3,9 +3,9 @@ import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { buildBlipScript, deriveWrittenSummary, ttsMp3 } from '@/lib/openai';
 
-export const runtime = 'nodejs';
+export const runtime = 'nodejs'; // Node runtime so Buffer & supabase-js work
 
-// ---- Supabase (server) ----
+// ---- Supabase admin client ----
 const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -65,12 +65,12 @@ async function objectExists(prefix: string, name: string) {
     sortBy: { column: 'name', order: 'asc' },
     search: name,
   });
-  return (data || []).some((f) => f.name === name);
+  return (data || []).some(f => f.name === name);
 }
 
 async function safeRemove(paths: string[]) {
   if (!paths.length) return;
-  await supabase.storage.from(BUCKET).remove(paths);
+  await supabase.storage.from(BUCKET).remove(paths); // ignore not-found
 }
 
 type Inputs = {
@@ -78,7 +78,7 @@ type Inputs = {
   tz?: string | null;
   force?: boolean;
   test?: boolean;
-  voice?: string | null; // QA override (onyx, echo, etc.)
+  voice?: string | null; // optional override for QA (e.g., onyx, echo)
 };
 
 async function handle(req: NextRequest, fromBody?: Partial<Inputs>) {
@@ -103,8 +103,10 @@ async function handle(req: NextRequest, fromBody?: Partial<Inputs>) {
     bodyTz || qsTz || req.headers.get('x-iana-tz') || process.env.BLIP_TZ || 'America/Chicago';
   const bucket = (rawBucket as RegionBucket) || mapIanaToBucket(tz);
 
-  // Test mode: always regenerate and return a unique tmp URL
-  const testMode = bodyTest || qsTest;
+  // ---- TEST MODE TOGGLE ----
+  // Enable test mode automatically when BLIP_TEST_ALWAYS=1 (great for local/preview)
+  const envTestAlways = process.env.BLIP_TEST_ALWAYS === '1';
+  const testMode = envTestAlways || bodyTest || qsTest;
 
   // Force bypasses cache; test mode implies force
   const force = testMode || bodyForce || qsForce;
@@ -124,19 +126,16 @@ async function handle(req: NextRequest, fromBody?: Partial<Inputs>) {
     const hasAudio = await objectExists(dir, audioName);
     if (hasAudio) {
       const hasJson = await objectExists(dir, jsonName);
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          cached: true,
-          testMode: false,
-          region: bucket,
-          tz,
-          ymd,
-          audioUrl: publicUrl(audioPath),
-          textUrl: hasJson ? publicUrl(jsonPath) : null,
-        }),
-        { headers: { 'content-type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({
+        ok: true,
+        cached: true,
+        testMode: false,
+        region: bucket,
+        tz,
+        ymd,
+        audioUrl: publicUrl(audioPath),
+        textUrl: hasJson ? publicUrl(jsonPath) : null,
+      }), { headers: { 'content-type': 'application/json' } });
     }
   }
 
@@ -156,25 +155,22 @@ async function handle(req: NextRequest, fromBody?: Partial<Inputs>) {
       null,
       2
     );
-    await supabase.storage.from(BUCKET).upload(tmpJsonPath, Buffer.from(tmpJsonBody, 'utf-8'), {
-      contentType: 'application/json',
-      cacheControl: '600',
-      upsert: true,
-    });
-
-    return new Response(
-      JSON.stringify({
-        ok: true,
-        cached: false,
-        testMode: true,
-        region: bucket,
-        tz,
-        ymd,
-        audioUrl: tmpUrl, // unique tmp path each run
-        textUrl: publicUrl(tmpJsonPath),
-      }),
-      { headers: { 'content-type': 'application/json' } }
+    await supabase.storage.from(BUCKET).upload(
+      tmpJsonPath,
+      Buffer.from(tmpJsonBody, 'utf-8'),
+      { contentType: 'application/json', cacheControl: '600', upsert: true }
     );
+
+    return new Response(JSON.stringify({
+      ok: true,
+      cached: false,
+      testMode: true,
+      region: bucket,
+      tz,
+      ymd,
+      audioUrl: tmpUrl,                // unique tmp path each run
+      textUrl: publicUrl(tmpJsonPath), // unique tmp JSON
+    }), { headers: { 'content-type': 'application/json' } });
   }
 
   // ----- NORMAL MODE: move to canonical cohort path (stable for the day) -----
@@ -204,19 +200,16 @@ async function handle(req: NextRequest, fromBody?: Partial<Inputs>) {
     { contentType: 'application/json', cacheControl: '3600', upsert: true }
   );
 
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      cached: false,
-      testMode: false,
-      region: bucket,
-      tz,
-      ymd,
-      audioUrl: moved ? publicUrl(audioPath) : tmpUrl, // fallback to tmp if move failed
-      textUrl: publicUrl(jsonPath),
-    }),
-    { headers: { 'content-type': 'application/json' } }
-  );
+  return new Response(JSON.stringify({
+    ok: true,
+    cached: false,
+    testMode: false,
+    region: bucket,
+    tz,
+    ymd,
+    audioUrl: moved ? publicUrl(audioPath) : tmpUrl, // fallback to tmp if move failed
+    textUrl: publicUrl(jsonPath),
+  }), { headers: { 'content-type': 'application/json' } });
 }
 
 // ---- Method handlers ----
@@ -228,9 +221,7 @@ export async function POST(req: NextRequest) {
   let body: Partial<Inputs> = {};
   try {
     body = await req.json();
-  } catch {
-    // ignore empty body
-  }
+  } catch { /* ignore empty body */ }
   return handle(req, body);
 }
 
@@ -238,7 +229,7 @@ export async function OPTIONS() {
   return new Response(null, {
     status: 204,
     headers: {
-      Allow: 'GET, POST, OPTIONS, HEAD',
+      'Allow': 'GET, POST, OPTIONS, HEAD',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
       'Access-Control-Allow-Headers': 'content-type',
     },

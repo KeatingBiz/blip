@@ -9,11 +9,7 @@
     { "path": "/api/cron/prep-cohorts?bucket=us_alaska",   "schedule": "45 14 * * *" },
     { "path": "/api/cron/prep-cohorts?bucket=us_aleutian", "schedule": "45 15 * * *" },
     { "path": "/api/cron/prep-cohorts?bucket=us_hawaii",   "schedule": "45 16 * * *" },
-
     { "path": "/api/cron/prep-cohorts?bucket=europe",      "schedule": "45 05 * * *" },
     { "path": "/api/cron/prep-cohorts?bucket=apac",        "schedule": "45 22 * * *" }
-
-    /* NOTE: All times are UTC for summer/DST.
-       In winter you can bump some by +1h, or just leave as-is if “close enough” is fine. */
   ]
 }

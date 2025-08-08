@@ -3,18 +3,17 @@ import { webSearchSummary } from '@/lib/openai';
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const query = searchParams.get('q')?.trim();
-  // allow ?max= to override, default 140 chars
-  const max = Number(searchParams.get('max')) || 140;
+  const q = (searchParams.get('q') || '').trim();
+  const max = Number(searchParams.get('max') || 140);
 
-  if (!query) {
+  if (!q) {
     return new Response(JSON.stringify({ error: 'Missing query' }), { status: 400 });
   }
 
   try {
-    const result = await webSearchSummary(query); // <- single arg now
+    // webSearchSummary expects { query: string }
+    const result = await webSearchSummary({ query: q });
 
-    // handle both shapes (string or { summary, ... })
     const summary =
       typeof result === 'string'
         ? result
@@ -33,4 +32,5 @@ export async function GET(req: NextRequest) {
     });
   }
 }
+
 

@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
-import type { Preferences, TopicsKey } from '@/lib/types';
-import { getPrefs, savePrefs } from '@/lib/api';
+import type { Preferences, TopicsKey } from '../lib/types';
+import { getPrefs, savePrefs } from '../lib/api';
 
 const ALL: TopicsKey[] = [
   'top', 'markets', 'tech', 'sports', 'world',
@@ -29,11 +29,7 @@ export default function PreferencesForm({ userId }: { userId: string }) {
 
   async function onSave() {
     setSaving(true);
-    try {
-      await savePrefs(prefs);
-    } finally {
-      setSaving(false);
-    }
+    try { await savePrefs(prefs); } finally { setSaving(false); }
   }
 
   function toggleTopic(t: TopicsKey) {

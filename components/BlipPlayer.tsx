@@ -1,6 +1,6 @@
 'use client';
 import { useState } from 'react';
-import { getBlipFree, getBlipPremium } from '@/lib/api';
+import { getBlipFree, getBlipPremium } from '../lib/api';
 
 export default function BlipPlayer({ plan, userId }: { plan: 'free' | 'premium'; userId: string }) {
   const [loading, setLoading] = useState(false);

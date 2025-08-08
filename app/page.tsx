@@ -28,8 +28,9 @@ export default function Page(){
 
   return (
     <div className="container">
+      {/* BIG centered logo + title */}
       <div className="brand">
-        {/* If you added /public/logo-b.png it will show; otherwise this <img> hides itself */}
+        {/* If you uploaded a PNG, use /logo-b.png. If SVG, use /logo-b.svg */}
         <img src="/logo-b.png" alt="Blip logo"
              onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
         <div style={{textAlign:'center'}}>
@@ -38,16 +39,14 @@ export default function Page(){
         </div>
       </div>
 
-      <div className="center" style={{marginBottom:8}}>
-        <button className="btn outline" onClick={togglePlan}>Plan: <b>{plan}</b> (toggle)</button>
-      </div>
-
+      {/* Tabs right under the logo */}
       <div className="tabbar">
         <button className={`tab ${tab==='blip'?'active':''}`} onClick={()=>setTab('blip')}>Morning Blip</button>
         <button className={`tab ${tab==='prefs'?'active':''}`} onClick={()=>setTab('prefs')}>Preferences</button>
         <button className={`tab ${tab==='voice'?'active':''}`} onClick={()=>setTab('voice')}>Voice (Premium)</button>
       </div>
 
+      {/* Content card */}
       {tab==='blip' && <BlipPlayer plan={plan} userId={userId} />}
       {tab==='prefs' && userId && <PreferencesForm userId={userId} />}
       {tab==='voice' && plan==='premium'
@@ -55,8 +54,14 @@ export default function Page(){
         : (tab==='voice' && <div className="card"><div className="small">Upgrade to premium to use the live voice agent.</div></div>)
       }
 
+      {/* Plan toggle now at the very bottom */}
       <div className="hr" />
-      <div className="small center">User: {userId ? userId.slice(0,8) : ''}… • Demo uses local storage for identity and plan.</div>
+      <div className="center" style={{marginTop:6}}>
+        <button className="btn outline" onClick={togglePlan}>Plan: <b>{plan}</b> (toggle)</button>
+      </div>
+
+      {/* User id is intentionally hidden now */}
     </div>
   );
 }
+

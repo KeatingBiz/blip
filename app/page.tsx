@@ -28,9 +28,18 @@ export default function Page(){
 
   return (
     <div className="container">
-      <div className="row" style={{alignItems:'center', justifyContent:'space-between'}}>
-        <h2>Blip</h2>
-        <button className="btn" onClick={togglePlan}>Plan: <b>{plan}</b> (toggle)</button>
+      <div className="brand">
+        {/* If you added /public/logo-b.png it will show; otherwise this <img> hides itself */}
+        <img src="/logo-b.png" alt="Blip logo"
+             onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
+        <div style={{textAlign:'center'}}>
+          <h1>Blip</h1>
+          <div className="sub">Your AI Morning Brief</div>
+        </div>
+      </div>
+
+      <div className="center" style={{marginBottom:8}}>
+        <button className="btn outline" onClick={togglePlan}>Plan: <b>{plan}</b> (toggle)</button>
       </div>
 
       <div className="tabbar">
@@ -47,8 +56,7 @@ export default function Page(){
       }
 
       <div className="hr" />
-      <div className="small">User: {userId ? userId.slice(0,8) : ''}… • Demo uses local storage for identity and plan.</div>
+      <div className="small center">User: {userId ? userId.slice(0,8) : ''}… • Demo uses local storage for identity and plan.</div>
     </div>
   );
 }
-

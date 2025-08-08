@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { getEphemeral, marketSnapshot, webSearch } from '@/lib/api';
+import { getEphemeral, marketSnapshot, webSearch } from '../lib/api';
 
 export default function VoiceAgent() {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -61,24 +61,14 @@ export default function VoiceAgent() {
     const q = prompt("Ask a current events question:");
     if (!q) return;
     setBusy(true);
-    try {
-      const res = await webSearch(q);
-      setLastTool(res.text);
-      alert(res.text);
-    } finally {
-      setBusy(false);
-    }
+    try { const res = await webSearch(q); setLastTool(res.text); alert(res.text); }
+    finally { setBusy(false); }
   }
 
   async function quickMarkets() {
     setBusy(true);
-    try {
-      const res = await marketSnapshot();
-      setLastTool(res.text);
-      alert(res.text);
-    } finally {
-      setBusy(false);
-    }
+    try { const res = await marketSnapshot(); setLastTool(res.text); alert(res.text); }
+    finally { setBusy(false); }
   }
 
   useEffect(() => () => stop(), []);

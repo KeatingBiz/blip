@@ -1,109 +1,69 @@
-import { nanoid } from 'nanoid';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { buildBlipScript, deriveWrittenSummary, ttsMp3 } from '@/lib/openai';
-import { saveAudioBuffer } from '@/lib/storage';
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { buildBlipScript, deriveWrittenSummary, ttsMp3 } from '../../../../lib/openai';
+import { todayKeyTZ } from '../../../../lib/dates';
+import { tzBucket, bucketAnchorTz, type Bucket } from '../../../../lib/tzbuckets';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-function todayKey() {
-  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-}
+const SUPABASE_URL = process.env.SUPABASE_URL!;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const BUCKET = process.env.SUPABASE_BUCKET || 'blip';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({}));
-  const { user_id, mode = 'auto' } = body || {};
-  const ymd = todayKey();
+  try {
+    const body = await req.json().catch(() => ({} as any));
+    const clientTz = (body?.tz as string | undefined) || '';
+    const b: Bucket = tzBucket(clientTz);
+    const anchorTz = bucketAnchorTz(b);
+    const ymd = todayKeyTZ(anchorTz);
+    const cohortKey = `free:${b}:${ymd}`;
 
-  // Figure out plan + prefs
-  let plan: 'free' | 'premium' = 'free';
-  let prefs: any = null;
+    // Try today's regional cohort
+    let { data: row, error: selErr } = await supabase
+      .from('blips')
+      .select('id,audio_url,script,summary,cohort_key,date')
+      .eq('cohort_key', cohortKey)
+      .maybeSingle();
+    if (selErr) throw selErr;
 
-  if (user_id) {
-    const prof = await supabaseAdmin.from('profiles').select('plan').eq('id', user_id).maybeSingle();
-    if (!prof.error && prof.data?.plan) plan = prof.data.plan;
-    const pref = await supabaseAdmin.from('preferences').select('*').eq('user_id', user_id).maybeSingle();
-    if (!pref.error) prefs = pref.data;
-  }
+    // If missing (cron didn’t hit yet), generate on-demand for this region
+    if (!row) {
+      const script = await buildBlipScript({ topics: ['top','markets','world'] });
+      const summary = await deriveWrittenSummary(script);
+      const audioBuf = await ttsMp3(script, 'verse');
+      const objectPath = `cohorts/${b}/${ymd}/free.mp3`;
 
-  const effectivePlan = mode === 'free' ? 'free' : plan;
+      const { error: upErr } = await supabase
+        .storage.from(BUCKET)
+        .upload(objectPath, audioBuf, { contentType: 'audio/mpeg', upsert: true });
+      if (upErr) throw upErr;
 
-  // Free cohort (reused for all free users per day)
-  if (effectivePlan === 'free') {
-    const cohortKey = `free:${ymd}`;
-    const existing = await supabaseAdmin.from('blips').select('*').eq('cohort_key', cohortKey).maybeSingle();
-    if (!existing.error && existing.data) {
-      return new Response(
-        JSON.stringify({
-          audioUrl: existing.data.audio_url,
-          script: existing.data.script,
-          summary: existing.data.summary,
-          cohort: cohortKey,
-        }),
-        { headers: { 'content-type': 'application/json' } }
-      );
+      const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(objectPath);
+      const audioUrl = pub?.publicUrl;
+
+      const { data: ins, error: insErr } = await supabase.from('blips')
+        .insert({ cohort_key: cohortKey, date: ymd, audio_url: audioUrl, script, summary })
+        .select()
+        .single();
+      if (insErr) throw insErr;
+      row = ins;
     }
 
-    const topics = ['markets', 'top', 'world'];
-    const script = await buildBlipScript({ topics, persona: 'neutral' });
-    const summary = await deriveWrittenSummary(script);
-    const mp3 = await ttsMp3(script, 'verse');
-    const filename = `blip_free_${ymd}_${nanoid(6)}.mp3`;
-    const audioUrl = await saveAudioBuffer(filename, mp3);
-
-    await supabaseAdmin.from('blips').insert({
-      date: ymd,
-      cohort_key: cohortKey,
-      script,
-      summary,
-      audio_url: audioUrl,
+    return NextResponse.json({
+      audioUrl: row!.audio_url,
+      script: row!.script,
+      summary: row!.summary,
+      cohort: row!.cohort_key,
     });
-
-    return new Response(JSON.stringify({ audioUrl, script, summary, cohort: cohortKey }), {
+  } catch (err: any) {
+    console.error('BLIP_GENERATE_ERROR', err?.message, err?.stack);
+    return new NextResponse(JSON.stringify({ error: String(err?.message || err) }), {
+      status: 500,
       headers: { 'content-type': 'application/json' },
     });
   }
-
-  // Premium personalized
-  const topics = (prefs?.topics && prefs.topics.length) ? prefs.topics : ['markets', 'us', 'world'];
-  const tickers = prefs?.tickers || ['SPY', 'BTC-USD'];
-  const location = prefs?.location || '';
-
-  // Already generated today?
-  if (user_id) {
-    const existing = await supabaseAdmin
-      .from('blips')
-      .select('*')
-      .eq('user_id', user_id)
-      .eq('date', ymd)
-      .maybeSingle();
-
-    if (!existing.error && existing.data) {
-      return new Response(
-        JSON.stringify({
-          audioUrl: existing.data.audio_url,
-          script: existing.data.script,
-          summary: existing.data.summary,
-        }),
-        { headers: { 'content-type': 'application/json' } }
-      );
-    }
-  }
-
-  const script = await buildBlipScript({ topics, tickers, location, persona: 'neutral' });
-  const summary = await deriveWrittenSummary(script);
-  const mp3 = await ttsMp3(script, 'verse');
-  const filename = `blip_user_${user_id || 'anon'}_${ymd}_${nanoid(6)}.mp3`;
-  const audioUrl = await saveAudioBuffer(filename, mp3);
-
-  await supabaseAdmin.from('blips').insert({
-    date: ymd,
-    user_id,
-    script,
-    summary,
-    audio_url: audioUrl,
-  });
-
-  return new Response(JSON.stringify({ audioUrl, script, summary }), {
-    headers: { 'content-type': 'application/json' },
-  });
 }

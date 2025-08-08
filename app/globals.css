@@ -5,7 +5,7 @@
   --muted:#f3f4f6;
   --text:#111827;
   --subtext:#374151;
-  --accent:#111827;
+  --accent:#111827;        /* primary (near-black) */
 }
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -16,14 +16,15 @@ body{
 }
 .container{max-width:840px; margin:0 auto; padding:28px}
 
-/* Header/brand: now vertical + centered with bigger logo */
+/* Header: logo only, bigger, centered */
 .brand{
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   gap:10px; margin-bottom:12px;
 }
-.brand img{width:80px; height:80px; object-fit:contain; filter:drop-shadow(0 2px 4px rgba(0,0,0,.08))}
-.brand h1{font-size:24px; line-height:1.1; margin:0}
-.brand .sub{font-size:12px; color:var(--subtext); text-align:center}
+.brand img{
+  width:96px; height:96px; object-fit:contain;
+  filter:drop-shadow(0 2px 4px rgba(0,0,0,.08));
+}
 
 .card{background:var(--card); border:1px solid var(--border); border-radius:16px; padding:18px; box-shadow:0 6px 26px rgba(0,0,0,.06)}
 .row{display:flex; gap:14px; flex-wrap:wrap}
@@ -55,4 +56,3 @@ body{
 .pill.success{border-color:#16a34a33; background:#ecfdf5}
 .spinner{width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; display:inline-block; animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-

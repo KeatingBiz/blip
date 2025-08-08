@@ -11,7 +11,10 @@ export const WRITER_MODEL =
 export const TTS_MODEL =
   process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts';
 
-// Create a short-lived Realtime session via REST (avoids TS type issues)
+/**
+ * Create a short-lived Realtime session via REST (avoids TS surface issues).
+ * Client will use the returned client_secret in WebRTC.
+ */
 export async function createRealtimeSession(
   voice: string = 'verse',
   modalities: Array<'audio' | 'text'> = ['audio', 'text']
@@ -35,6 +38,10 @@ export async function createRealtimeSession(
   return res.json();
 }
 
+/**
+ * Web search (Responses API) → concise sourced blurb.
+ * Uses input_text + web_search tool for TS compatibility.
+ */
 export async function webSearchSummary(query: string, maxWords = 140) {
   const res = await openai.responses.create({
     model: WRITER_MODEL,
@@ -42,18 +49,27 @@ export async function webSearchSummary(query: string, maxWords = 140) {
       {
         role: 'user',
         content: [
-          { type: 'text', text: `Search the web and provide a concise, sourced update. Query: ${query}. Max ${maxWords} words.` },
+          {
+            type: 'input_text',
+            text: `Search the web and provide a concise, sourced update. Query: ${query}. Max ${maxWords} words.`,
+          },
         ],
       },
     ],
-    tools: [{ type: 'web_search' }],
+    tools: [{ type: 'web_search' as const }],
   });
-  const text = res.output_text || '';
-  const citations =
-    ((res.output?.[0] as any)?.content as any[])?.filter?.((c: any) => c.type === 'citation') || [];
+
+  const text = (res as any).output_text ?? '';
+  const output = (res as any).output ?? [];
+  let citations: any[] = [];
+  try {
+    const first = output[0]?.content ?? [];
+    citations = first.filter((c: any) => c?.type === 'citation');
+  } catch {}
   return { text, citations };
 }
 
+/** Generate a 60–90s spoken script focused on “what changed since yesterday.” */
 export async function buildBlipScript(opts: {
   topics: string[];
   tickers?: string[];
@@ -81,18 +97,20 @@ Keep sentences short. Conversational ${persona}. Include brief attributions inli
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
+/** Turn the script into a 4–6 bullet typed summary. */
 export async function deriveWrittenSummary(script: string) {
   const res = await openai.chat.completions.create({
     model: WRITER_MODEL,
     temperature: 0.3,
     messages: [
-      { role: 'system', content: 'Summarize into 4–6 crisp bullets with one-liner “why it matters.” No fluff.' },
+      { role: 'system', content: 'Summarize into 4–6 crisp bullets with a one-line “why it matters.” No fluff.' },
       { role: 'user', content: script },
     ],
   });
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
+/** Text-to-speech MP3 buffer (saved to Supabase Storage by our storage util). */
 export async function ttsMp3(text: string, voice: string = 'verse') {
   const audio = await openai.audio.speech.create({
     model: TTS_MODEL,
@@ -104,9 +122,11 @@ export async function ttsMp3(text: string, voice: string = 'verse') {
   return buf;
 }
 
+/** Convenience: quick markets snapshot via web search. */
 export async function marketsNow(
   tickers: string[] = ['SPY', 'QQQ', 'DIA', 'BTC-USD', 'ETH-USD']
 ) {
   const q = `Latest snapshot today for ${tickers.join(', ')}, key moves and drivers.`;
   return webSearchSummary(q, 90);
 }
+

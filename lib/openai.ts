@@ -2,7 +2,7 @@
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
 
-// ---------- Clients ----------
+// -------------------- Clients --------------------
 export const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
@@ -12,7 +12,15 @@ export const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// ---------- Types ----------
+// -------------------- Model presets --------------------
+export const MODELS = {
+  BLIP_TEXT: 'gpt-5-mini',      // main blip script
+  BLIP_SUMMARY: 'gpt-5-nano',   // bullets + search blurbs
+  TTS: process.env.TTS_MODEL || 'gpt-4o-mini-tts', // or 'tts-1' / 'tts-1-hd'
+  REALTIME: 'gpt-4o-realtime-preview-2024-12-17',  // keep 4o realtime for now
+};
+
+// -------------------- Types --------------------
 type RegionBucket =
   | 'us_atlantic' | 'us_east' | 'us_central' | 'us_mountain' | 'us_arizona'
   | 'us_pacific' | 'us_alaska' | 'us_aleutian' | 'us_hawaii'
@@ -28,11 +36,11 @@ export type BuildBlipResult = {
   meta?: Record<string, any>;
 };
 
-// ---------- Helpers ----------
+// -------------------- Small helpers --------------------
 function nowInTZ(tz?: string) {
   const d = new Date();
   if (!tz) return d;
-  // Represent local time components in the provided time zone
+
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
     hour12: false,
@@ -45,10 +53,8 @@ function nowInTZ(tz?: string) {
 
   const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? '0');
 
-  // Build a new Date using the parts but in UTC to avoid DST weirdness
-  // (Not perfectly exact for historical dates but fine for "now".)
   const year = get('year');
-  const month = get('month'); // 01..12
+  const month = get('month');
   const day = get('day');
   const hour = get('hour');
   const minute = get('minute');
@@ -65,106 +71,88 @@ function ymd(d = new Date()) {
 }
 
 function humanizeForVoice(text: string) {
-  // Gentle shaping: contractions + read-aloud pacing hints
-  return text
-    .replace(/\s+/g, ' ')
-    .replace(/%/g, ' percent')
-    .trim();
+  return text.replace(/\s+/g, ' ').replace(/%/g, ' percent').trim();
 }
 
-// ---------- Public: marketsNow ----------
-/**
- * Lightweight U.S. market clock (no holiday logic).
- * Returns "open"/"closed" for NYSE based on America/New_York.
- */
+// -------------------- marketsNow --------------------
+/** Lightweight NYSE open/closed guess (no holiday logic). */
 export async function marketsNow() {
   const tz = 'America/New_York';
   const d = nowInTZ(tz);
-  const day = d.getUTCDay(); // 0 Sun ... 6 Sat (approx; we used UTC iso from tz parts)
+
   const hour = Number(
     new Intl.DateTimeFormat('en-US', { hour: '2-digit', hour12: false, timeZone: tz }).format(d)
   );
   const minute = Number(
     new Intl.DateTimeFormat('en-US', { minute: '2-digit', hour12: false, timeZone: tz }).format(d)
   );
+  const weekday = Number(
+    new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz })
+      .format(d)
+      .match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/) ? 1 : 0 // dummy use to avoid ts complaints
+  );
+  const jsDay = new Date(d.toISOString()).getUTCDay(); // fine for "now" checks
   const mins = hour * 60 + minute;
 
-  // 9:30–16:00 ET = 570..960 mins
-  const isWeekend = day === 0 || day === 6;
+  const isWeekend = jsDay === 0 || jsDay === 6;
+  // 9:30–16:00 ET = 570..960
   const isOpen = !isWeekend && mins >= 570 && mins <= 960;
 
-  return {
-    tz,
-    open: isOpen,
-    window: '09:30–16:00',
-    timestamp: d.toISOString(),
-  };
+  return { tz, open: isOpen, window: '09:30–16:00', timestamp: d.toISOString() };
 }
 
-// ---------- Public: webSearchSummary ----------
+// -------------------- webSearchSummary --------------------
 /**
- * Minimal, dependency-free summary function to keep builds green.
- * Accepts { query } and returns a short neutral summary using the Responses API.
- * You can later swap this to a true web search pipeline.
+ * Minimal neutral summary. Accepts { query, maxChars? }.
+ * Swap this later for a real search+grounding step.
  */
-export async function webSearchSummary(arg: { query: string }) {
+export async function webSearchSummary(arg: { query: string; maxChars?: number }) {
   const query = (arg?.query || '').trim();
+  const maxChars = arg?.maxChars && arg.maxChars > 0 ? arg.maxChars : undefined;
 
-  if (!query) {
-    return { summary: '' };
-  }
+  if (!query) return { summary: '' };
 
-  const system =
-    'You summarize neutrally in one or two sentences. Avoid dates unless you are certain. No emojis.';
-
-  // Using responses API keeps this compatible going forward.
   const resp = await openai.responses.create({
-    model: 'gpt-4o-mini',
+    model: MODELS.BLIP_SUMMARY,
     input: [
-      { role: 'system', content: system },
+      { role: 'system', content: 'Summarize neutrally in one or two sentences. No emojis.' },
       { role: 'user', content: `Summarize briefly: ${query}` },
     ],
   });
 
-  const text =
-    (resp.output_text ?? '').trim() ||
-    (Array.isArray(resp.output) ? resp.output.map((o: any) => o.content?.[0]?.text ?? '').join(' ') : '');
-
+  let text = (resp.output_text ?? '').trim();
+  if (maxChars && text.length > maxChars) {
+    text = text.slice(0, maxChars - 1).trimEnd() + '…';
+  }
   return { summary: text };
 }
 
-// ---------- Public: buildBlipScript ----------
-/**
- * Builds a short, human-sounding “morning blip” script.
- * Keeps implementation simple so it’s fast & reliable in cron.
- */
+// -------------------- buildBlipScript --------------------
 export async function buildBlipScript(opts: BuildBlipOpts = {}): Promise<BuildBlipResult> {
   const tz = (opts.tz || process.env.BLIP_TZ || 'America/Chicago') as string;
   const region = (opts.region || 'us_central') as string;
 
   const when = nowInTZ(tz);
   const dateStr = new Intl.DateTimeFormat('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric',
-    timeZone: tz,
+    weekday: 'long', month: 'long', day: 'numeric', timeZone: tz,
   }).format(when);
 
-  // Pull a tiny “search-style” blurb to seed the brief (safe to run even if it’s generic)
-  const { summary: headlines } = await webSearchSummary({ query: `Top headlines ${region}` });
+  const { summary: headlines } = await webSearchSummary({ query: `Top headlines ${region}`, maxChars: 200 });
   const mkt = await marketsNow();
 
   const prompt = [
     `Write a 60–90 second spoken morning brief for a general audience in ${region}.`,
     `Date: ${dateStr} (local to ${tz}).`,
-    `Headlines context (optional/generic): ${headlines || 'generic headlines'}.`,
+    `Headlines context (optional): ${headlines || 'generic headlines'}.`,
     `Market status: NYSE is ${mkt.open ? 'open' : 'closed'} (hours ${mkt.window} ET).`,
     `Constraints:`,
-    `- Conversational, calm, concise. No hype.`,
-    `- If the headline context is vague, keep it general and avoid fabricating specifics.`,
-    `- End with one crisp “quick fact” line.`,
+    `- Conversational, calm, concise. Avoid hype and speculation.`,
+    `- If context is vague, keep it general and avoid fabricating specifics.`,
+    `- End with a single quick fact.`,
   ].join('\n');
 
   const resp = await openai.responses.create({
-    model: 'gpt-4o-mini',
+    model: MODELS.BLIP_TEXT, // gpt-5-mini
     input: [
       { role: 'system', content: 'You are a broadcast writer who speaks clearly for audio.' },
       { role: 'user', content: prompt },
@@ -174,24 +162,13 @@ export async function buildBlipScript(opts: BuildBlipOpts = {}): Promise<BuildBl
   const raw = (resp.output_text ?? '').trim();
   const script = humanizeForVoice(raw);
 
-  return {
-    script,
-    meta: {
-      tz,
-      region,
-      date: ymd(),
-      markets: mkt,
-    },
-  };
+  return { script, meta: { tz, region, date: ymd(), markets: mkt } };
 }
 
-// ---------- Public: deriveWrittenSummary ----------
-/**
- * Produces a short written summary from the spoken script.
- */
+// -------------------- deriveWrittenSummary --------------------
 export async function deriveWrittenSummary(script: string) {
   const resp = await openai.responses.create({
-    model: 'gpt-4o-mini',
+    model: MODELS.BLIP_SUMMARY, // gpt-5-nano
     input: [
       { role: 'system', content: 'Summarize neutrally in 3–5 bullet points, no intro or outro.' },
       { role: 'user', content: script },
@@ -202,19 +179,16 @@ export async function deriveWrittenSummary(script: string) {
   return { summary: text };
 }
 
-// ---------- Public: ttsMp3 ----------
-/**
- * TTS to MP3 and upload to Supabase Storage.
- * Returns { url, path }.
- */
+// -------------------- ttsMp3 --------------------
+/** TTS to MP3 and upload to Supabase Storage. Returns { url, path }. */
 export async function ttsMp3(text: string, voice = process.env.TTS_VOICE || 'alloy') {
   const shaped = humanizeForVoice(text);
 
   const speech = await openai.audio.speech.create({
-    model: 'gpt-4o-mini-tts', // or 'tts-1'
+    model: MODELS.TTS,            // 'gpt-4o-mini-tts' or 'tts-1' / 'tts-1-hd'
     voice: String(voice),
     input: shaped,
-    response_format: 'mp3', // <-- required field name in current SDK
+    response_format: 'mp3',       // NOTE: current SDK uses response_format
   });
 
   const arrBuf = await speech.arrayBuffer();
@@ -224,36 +198,60 @@ export async function ttsMp3(text: string, voice = process.env.TTS_VOICE || 'all
 
   const { error } = await supabaseAdmin.storage
     .from(bucket)
-    .upload(key, arrBuf, {
+    .upload(key, Buffer.from(arrBuf), {
       contentType: 'audio/mpeg',
       cacheControl: '31536000',
       upsert: true,
     });
 
-  if (error) {
-    throw error;
-  }
+  if (error) throw error;
 
   const { data: pub } = supabaseAdmin.storage.from(bucket).getPublicUrl(key);
   return { url: pub.publicUrl, path: key };
 }
 
-// ---------- Public: createRealtimeSession ----------
+// -------------------- createRealtimeSession --------------------
 /**
- * Creates a Realtime ephemeral session on the server.
- * Accepts (voice, modalities) to stay compatible with your route;
- * `modalities` is accepted then ignored here (it’s configured client-side).
+ * Accepts either:
+ *  - (voice?: string, modalities?: Array<'audio' | 'text'>)
+ *  - ({ voice?, model?, instructions?, modalities? })
+ * Returns the Realtime session (with client_secret if supported by the SDK).
  */
+type RealtimeSessionOptions = {
+  voice?: string;
+  model?: string;
+  instructions?: string;
+  modalities?: Array<'audio' | 'text'>;
+};
+
 export async function createRealtimeSession(
-  voice = 'verse',
-  _modalities: Array<'audio' | 'text'> = ['audio', 'text']
+  arg1?: string | RealtimeSessionOptions,
+  arg2?: Array<'audio' | 'text'>
 ) {
-  // Keep params minimal to avoid type drift across SDK versions
-  const session = await openai.realtime.sessions.create({
-    model: 'gpt-4o-realtime-preview-2024-12-17',
+  let voice = 'verse';
+  let model = MODELS.REALTIME;
+  let instructions: string | undefined;
+  let modalities: Array<'audio' | 'text'> = ['audio', 'text'];
+
+  if (typeof arg1 === 'string' || arg1 === undefined) {
+    // Old style: (voice, modalities?)
+    if (typeof arg1 === 'string') voice = arg1;
+    if (Array.isArray(arg2)) modalities = arg2;
+  } else {
+    // New style: ({ voice, model, instructions, modalities })
+    voice = arg1.voice ?? voice;
+    model = arg1.model ?? model;
+    instructions = arg1.instructions ?? instructions;
+    modalities = arg1.modalities ?? modalities;
+  }
+
+  // Cast to any to avoid type drift between SDK versions.
+  const session = await (openai as any).realtime.sessions.create({
+    model,
     voice,
-  } as any);
+    ...(instructions ? { instructions } : {}),
+    ...(modalities ? { modalities } : {}),
+  });
 
   return session;
 }
-

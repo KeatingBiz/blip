@@ -30,7 +30,6 @@ export default function Page(){
     <div className="container">
       {/* Logo only */}
       <div className="brand">
-        {/* Use /logo-b.svg if that’s what you uploaded */}
         <img src="/logo-b.png" alt="Blip logo"
              onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
       </div>
@@ -44,7 +43,7 @@ export default function Page(){
 
       {/* Content */}
       {tab==='blip' && <BlipPlayer plan={plan} userId={userId} />}
-      {tab==='prefs' && userId && <PreferencesForm userId={userId} />}
+      {tab==='prefs' && userId && <PreferencesForm userId={userId} plan={plan} />}
       {tab==='voice' && plan==='premium'
         ? <VoiceAgent/>
         : (tab==='voice' && <div className="card"><div className="small">Upgrade to premium to use the live voice agent.</div></div>)
@@ -58,3 +57,4 @@ export default function Page(){
     </div>
   );
 }
+

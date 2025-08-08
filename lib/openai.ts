@@ -160,7 +160,7 @@ export async function buildBlipScript(opts: BuildBlipOpts = {}): Promise<BuildBl
 
     `Voice & Energy:`,
     `- Male-presenting narrator, warm and confident.`,
-    `- Energy 6/10: engaged and upbeat, never shouty.`,
+    `- Energy 7.5/10: engaged and upbeat, never shouty.`,
     `- Natural, conversational delivery—like a smart friend leaving a voice memo.`,
 
     `Structure:`,

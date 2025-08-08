@@ -1,4 +1,3 @@
-// lib/openai.ts
 import OpenAI from 'openai';
 
 export const openai = new OpenAI({
@@ -12,19 +11,30 @@ export const WRITER_MODEL =
 export const TTS_MODEL =
   process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts';
 
-// Create a short-lived Realtime session (client uses client_secret over WebRTC)
+// Create a short-lived Realtime session via REST (avoids TS type issues)
 export async function createRealtimeSession(
   voice: string = 'verse',
   modalities: Array<'audio' | 'text'> = ['audio', 'text']
 ) {
-  return openai.realtime.sessions.create({
-    model: REALTIME_MODEL,
-    voice,
-    modalities,
+  const res = await fetch('https://api.openai.com/v1/realtime/sessions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY!}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: REALTIME_MODEL,
+      voice,
+      modalities,
+    }),
   });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Realtime session failed: ${res.status} ${text}`);
+  }
+  return res.json();
 }
 
-// Use Responses API + built-in web_search to get a concise, sourced blurb
 export async function webSearchSummary(query: string, maxWords = 140) {
   const res = await openai.responses.create({
     model: WRITER_MODEL,
@@ -32,25 +42,18 @@ export async function webSearchSummary(query: string, maxWords = 140) {
       {
         role: 'user',
         content: [
-          {
-            type: 'text',
-            text: `Search the web and provide a concise, sourced update. Query: ${query}. Max ${maxWords} words.`,
-          },
+          { type: 'text', text: `Search the web and provide a concise, sourced update. Query: ${query}. Max ${maxWords} words.` },
         ],
       },
     ],
     tools: [{ type: 'web_search' }],
   });
-
   const text = res.output_text || '';
   const citations =
-    ((res.output?.[0] as any)?.content as any[])?.filter?.(
-      (c: any) => c.type === 'citation'
-    ) || [];
+    ((res.output?.[0] as any)?.content as any[])?.filter?.((c: any) => c.type === 'citation') || [];
   return { text, citations };
 }
 
-// Write a 60–90s spoken script focused on "what changed since yesterday"
 export async function buildBlipScript(opts: {
   topics: string[];
   tickers?: string[];
@@ -78,7 +81,6 @@ Keep sentences short. Conversational ${persona}. Include brief attributions inli
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// Convert the script into a 4–6 bullet typed summary
 export async function deriveWrittenSummary(script: string) {
   const res = await openai.chat.completions.create({
     model: WRITER_MODEL,
@@ -91,7 +93,6 @@ export async function deriveWrittenSummary(script: string) {
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// Text-to-speech MP3 buffer
 export async function ttsMp3(text: string, voice: string = 'verse') {
   const audio = await openai.audio.speech.create({
     model: TTS_MODEL,
@@ -103,7 +104,6 @@ export async function ttsMp3(text: string, voice: string = 'verse') {
   return buf;
 }
 
-// Quick markets snapshot via web_search
 export async function marketsNow(
   tickers: string[] = ['SPY', 'QQQ', 'DIA', 'BTC-USD', 'ETH-USD']
 ) {

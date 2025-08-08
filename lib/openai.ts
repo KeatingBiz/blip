@@ -13,7 +13,7 @@ export const TTS_MODEL =
 
 /**
  * Create a short-lived Realtime session via REST (avoids TS surface issues).
- * Client will use the returned client_secret in WebRTC.
+ * The client uses the returned client_secret with WebRTC.
  */
 export async function createRealtimeSession(
   voice: string = 'verse',
@@ -40,7 +40,8 @@ export async function createRealtimeSession(
 
 /**
  * Web search (Responses API) → concise sourced blurb.
- * Uses input_text + web_search tool for TS compatibility.
+ * Uses input_text + web_search_preview tool; cast tools to any to be compatible
+ * across SDK minor type changes.
  */
 export async function webSearchSummary(query: string, maxWords = 140) {
   const res = await openai.responses.create({
@@ -56,8 +57,8 @@ export async function webSearchSummary(query: string, maxWords = 140) {
         ],
       },
     ],
-    tools: [{ type: 'web_search' as const }],
-  });
+    tools: [{ type: 'web_search_preview' }] as any,
+  } as any);
 
   const text = (res as any).output_text ?? '';
   const output = (res as any).output ?? [];
@@ -129,4 +130,3 @@ export async function marketsNow(
   const q = `Latest snapshot today for ${tickers.join(', ')}, key moves and drivers.`;
   return webSearchSummary(q, 90);
 }
-

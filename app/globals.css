@@ -1,26 +1,18 @@
-@import "tailwindcss";
-
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
+:root { --bg: #0b0c10; --card: #111216; --muted:#2a2d33; --text:#e6e7ea; --accent:#6ee7b7; --accent2:#60a5fa; }
+*{ box-sizing:border-box } 
+body{ margin:0; font-family:ui-sans-serif,system-ui,-apple-system; background:var(--bg); color:var(--text) }
+.container{ max-width:980px; margin:0 auto; padding:24px }
+.card{ background:var(--card); border:1px solid #1a1c22; border-radius:16px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.25) }
+.row{ display:flex; gap:16px; flex-wrap:wrap }
+.btn{ background:var(--muted); border:1px solid #2f3238; color:#fff; padding:10px 14px; border-radius:12px; cursor:pointer }
+.btn:disabled{ opacity:.6; cursor:not-allowed }
+.btn.primary{ background:linear-gradient(180deg, var(--accent2), var(--accent)); border:0; color:#0b0c10; font-weight:700 }
+.input, select, textarea{ width:100%; background:#0f1014; color:#fff; border:1px solid #2f3238; padding:10px 12px; border-radius:10px }
+.label{ font-size:12px; opacity:.8; margin-bottom:6px; display:block }
+.badge{ display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:#0f1014; border:1px solid #2a2d33 }
+.tabbar{ display:flex; gap:8px; margin-bottom:16px }
+.tab{ padding:10px 14px; border-radius:12px; border:1px solid #2a2d33; background:#0f1014; cursor:pointer }
+.tab.active{ background:#18212a; border-color:#35506d }
+.small{ font-size:12px; opacity:.8 }
+.hr{ height:1px; background:#1a1c22; margin:14px 0 }
+.audio{ width:100%; margin-top:8px }

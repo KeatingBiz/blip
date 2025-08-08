@@ -117,7 +117,7 @@ export async function ttsMp3(text: string, voice: string = 'verse') {
     model: TTS_MODEL,
     voice,
     input: text,
-    format: 'mp3',
+    // no 'format' field — SDK returns audio data; default works fine for MP3
   });
   const buf = Buffer.from(await audio.arrayBuffer());
   return buf;

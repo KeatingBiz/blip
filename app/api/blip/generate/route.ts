@@ -3,9 +3,9 @@ import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { buildBlipScript, deriveWrittenSummary, ttsMp3 } from '@/lib/openai';
 
-export const runtime = 'nodejs'; // Node runtime so Buffer & supabase-js work
+export const runtime = 'nodejs';
 
-// ---- Supabase admin client ----
+// ---- Supabase (server) ----
 const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -59,5 +59,194 @@ function publicUrl(path: string) {
 }
 
 async function objectExists(prefix: string, name: string) {
-  const { data, error } = await supabase
+  const { data } = await supabase.storage.from(BUCKET).list(prefix, {
+    limit: 100,
+    offset: 0,
+    sortBy: { column: 'name', order: 'asc' },
+    search: name,
+  });
+  return (data || []).some((f) => f.name === name);
+}
+
+async function safeRemove(paths: string[]) {
+  if (!paths.length) return;
+  await supabase.storage.from(BUCKET).remove(paths);
+}
+
+type Inputs = {
+  bucket?: string | null;
+  tz?: string | null;
+  force?: boolean;
+  test?: boolean;
+  voice?: string | null; // QA override (onyx, echo, etc.)
+};
+
+async function handle(req: NextRequest, fromBody?: Partial<Inputs>) {
+  const url = new URL(req.url);
+  const search = url.searchParams;
+
+  // Accept from querystring or JSON body
+  const qsBucket = (search.get('bucket') || '').trim().toLowerCase();
+  const qsTz = (search.get('tz') || '').trim();
+  const qsForce = search.get('force') === '1';
+  const qsTest = search.get('test') === '1' || search.get('qa') === '1';
+  const qsVoice = (search.get('voice') || '').trim();
+
+  const bodyBucket = (fromBody?.bucket || '').trim().toLowerCase();
+  const bodyTz = (fromBody?.tz || '').trim();
+  const bodyForce = !!fromBody?.force;
+  const bodyTest = !!fromBody?.test;
+  const bodyVoice = (fromBody?.voice || '').trim();
+
+  const rawBucket = bodyBucket || qsBucket;
+  const tz =
+    bodyTz || qsTz || req.headers.get('x-iana-tz') || process.env.BLIP_TZ || 'America/Chicago';
+  const bucket = (rawBucket as RegionBucket) || mapIanaToBucket(tz);
+
+  // Test mode: always regenerate and return a unique tmp URL
+  const testMode = bodyTest || qsTest;
+
+  // Force bypasses cache; test mode implies force
+  const force = testMode || bodyForce || qsForce;
+
+  // Optional QA override voice (falls back to env)
+  const overrideVoice = bodyVoice || qsVoice || process.env.TTS_VOICE || 'verse';
+
+  const ymd = ymdInTZ(tz);
+  const dir = `cohorts/${bucket}/${ymd}`;
+  const audioName = 'free.mp3';
+  const jsonName = 'free.json';
+  const audioPath = `${dir}/${audioName}`;
+  const jsonPath = `${dir}/${jsonName}`;
+
+  // Return cached if present (unless force/test)
+  if (!force) {
+    const hasAudio = await objectExists(dir, audioName);
+    if (hasAudio) {
+      const hasJson = await objectExists(dir, jsonName);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          cached: true,
+          testMode: false,
+          region: bucket,
+          tz,
+          ymd,
+          audioUrl: publicUrl(audioPath),
+          textUrl: hasJson ? publicUrl(jsonPath) : null,
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+    }
+  }
+
+  // Generate new (BuildBlipOpts is { tz?, region? })
+  const { script } = await buildBlipScript({ tz, region: bucket });
+  const { summary } = await deriveWrittenSummary(script);
+
+  // TTS uploads to tmp/* and returns { url, path }
+  const { url: tmpUrl, path: tmpPath } = await ttsMp3(script, overrideVoice);
+
+  // ----- TEST MODE: return the tmp file directly (unique every time) -----
+  if (testMode) {
+    const stamp = Date.now();
+    const tmpJsonPath = `tmp/${ymd}/summary-${stamp}.json`;
+    const tmpJsonBody = JSON.stringify(
+      { script, summary, meta: { tz, region: bucket, date: ymd, test: true } },
+      null,
+      2
+    );
+    await supabase.storage.from(BUCKET).upload(tmpJsonPath, Buffer.from(tmpJsonBody, 'utf-8'), {
+      contentType: 'application/json',
+      cacheControl: '600',
+      upsert: true,
+    });
+
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        cached: false,
+        testMode: true,
+        region: bucket,
+        tz,
+        ymd,
+        audioUrl: tmpUrl, // unique tmp path each run
+        textUrl: publicUrl(tmpJsonPath),
+      }),
+      { headers: { 'content-type': 'application/json' } }
+    );
+  }
+
+  // ----- NORMAL MODE: move to canonical cohort path (stable for the day) -----
+  await safeRemove([audioPath]); // clear any prior file
+  let moved = false;
+  const storage: any = supabase.storage.from(BUCKET);
+  const moveRes = await storage.move(tmpPath, audioPath);
+  if (!moveRes?.error) {
+    moved = true;
+  } else {
+    const copyRes = await storage.copy(tmpPath, audioPath);
+    if (!copyRes?.error) {
+      await safeRemove([tmpPath]);
+      moved = true;
+    }
+  }
+
+  // Upload summary JSON (canonical)
+  const jsonBody = JSON.stringify(
+    { script, summary, meta: { tz, region: bucket, date: ymd } },
+    null,
+    2
+  );
+  await supabase.storage.from(BUCKET).upload(
+    jsonPath,
+    Buffer.from(jsonBody, 'utf-8'),
+    { contentType: 'application/json', cacheControl: '3600', upsert: true }
+  );
+
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      cached: false,
+      testMode: false,
+      region: bucket,
+      tz,
+      ymd,
+      audioUrl: moved ? publicUrl(audioPath) : tmpUrl, // fallback to tmp if move failed
+      textUrl: publicUrl(jsonPath),
+    }),
+    { headers: { 'content-type': 'application/json' } }
+  );
+}
+
+// ---- Method handlers ----
+export async function GET(req: NextRequest) {
+  return handle(req);
+}
+
+export async function POST(req: NextRequest) {
+  let body: Partial<Inputs> = {};
+  try {
+    body = await req.json();
+  } catch {
+    // ignore empty body
+  }
+  return handle(req, body);
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      Allow: 'GET, POST, OPTIONS, HEAD',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
+      'Access-Control-Allow-Headers': 'content-type',
+    },
+  });
+}
+
+export async function HEAD(req: NextRequest) {
+  const res = await handle(req);
+  return new Response(null, { status: res.status, headers: res.headers });
+}
 

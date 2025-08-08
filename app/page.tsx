@@ -1,9 +1,9 @@
 'use client';
 import { useEffect, useState } from 'react';
-import BlipPlayer from '@/components/BlipPlayer';
-import PreferencesForm from '@/components/PreferencesForm';
-import VoiceAgent from '@/components/VoiceAgent';
-import { upsertUser } from '@/lib/api';
+import BlipPlayer from '../components/BlipPlayer';
+import PreferencesForm from '../components/PreferencesForm';
+import VoiceAgent from '../components/VoiceAgent';
+import { upsertUser } from '../lib/api';
 import './globals.css';
 
 export default function Page(){
@@ -47,7 +47,8 @@ export default function Page(){
       }
 
       <div className="hr" />
-      <div className="small">User: {userId ? userId.slice(0,8) : ''}… • Demo uses local storage for identity and plan. We’ll wire Stripe later.</div>
+      <div className="small">User: {userId ? userId.slice(0,8) : ''}… • Demo uses local storage for identity and plan.</div>
     </div>
   );
 }
+

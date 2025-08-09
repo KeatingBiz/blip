@@ -1,71 +1,78 @@
-'use client';
-import { useEffect, useRef, useState } from 'react';
-import { getEphemeral, marketSnapshot, webSearch } from '../lib/api';
+"use client";
 
-export default function VoiceAgent(){
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [active, setActive] = useState(false);
-  const [pc, setPc] = useState<RTCPeerConnection|null>(null);
-  const [busy, setBusy] = useState(false);
-  const [lastTool, setLastTool] = useState<string>('');
+import { useEffect, useRef, useState } from "react";
 
-  async function start(){
-    setBusy(true);
-    try{
-      const token = await getEphemeral();
-      const _pc = new RTCPeerConnection();
-      setPc(_pc);
-      const stream = new MediaStream();
-      _pc.ontrack = (e)=>{
-        if (!audioRef.current) return;
-        stream.addTrack(e.track);
-        audioRef.current.srcObject = stream;
-        audioRef.current.play().catch(()=>{});
+export default function VoiceAgent() {
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const [status, setStatus] = useState("Click to start voice session");
+
+  const startVoiceSession = async () => {
+    setStatus("Connecting…");
+
+    try {
+      // Step 1: Get ephemeral key from your API
+      const tokenRes = await fetch("/api/auth/ephemeral");
+      const { client_secret } = await tokenRes.json();
+      if (!client_secret) throw new Error("No client_secret returned");
+
+      // Step 2: Create peer connection
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
+
+      // Play incoming audio
+      const audioEl = document.createElement("audio");
+      audioEl.autoplay = true;
+      pc.ontrack = (event) => {
+        audioEl.srcObject = event.streams[0];
       };
-      const ms = await navigator.mediaDevices.getUserMedia({ audio:true });
-      ms.getTracks().forEach(t=>_pc.addTrack(t, ms));
-      const offer = await _pc.createOffer();
-      await _pc.setLocalDescription(offer);
-      const model = process.env.NEXT_PUBLIC_REALTIME_MODEL || 'gpt-4o-realtime-preview';
-      const sdp = await fetch(`https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,{
-        method:'POST',
-        headers:{ Authorization:`Bearer ${token.client_secret}`, 'Content-Type':'application/sdp' },
-        body: offer.sdp as any
-      }).then(r=>r.text());
-      await _pc.setRemoteDescription({ type:'answer', sdp });
-      setActive(true);
-    } catch(e){ console.error(e); stop(); }
-    finally { setBusy(false); }
-  }
 
-  function stop(){ pc?.getSenders().forEach(s=>s.track?.stop()); pc?.close(); setPc(null); setActive(false); }
+      // Capture mic
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-  async function askSearch(){ const q = prompt('Ask a current events question:'); if(!q) return; setBusy(true); try{ const res = await webSearch(q); setLastTool(res.text); alert(res.text); } finally{ setBusy(false); } }
-  async function quickMarkets(){ setBusy(true); try{ const res = await marketSnapshot(); setLastTool(res.text); alert(res.text); } finally{ setBusy(false); } }
+      // Step 3: Create data channel (optional: can be used for events/text)
+      pc.createDataChannel("oai-events");
 
-  useEffect(()=>()=>stop(),[]);
+      // Step 4: Create offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      // Step 5: Send offer to OpenAI Realtime API
+      const sdpResponse = await fetch(
+        "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17", // Or gpt-5-mini if you want to test that cost
+        {
+          method: "POST",
+          body: offer.sdp,
+          headers: {
+            Authorization: `Bearer ${client_secret}`,
+            "Content-Type": "application/sdp",
+          },
+        }
+      );
+
+      // Step 6: Set remote description
+      const answerSDP = await sdpResponse.text();
+      await pc.setRemoteDescription({
+        type: "answer",
+        sdp: answerSDP,
+      });
+
+      setStatus("Voice session active!");
+    } catch (err) {
+      console.error(err);
+      setStatus("Error starting session");
+    }
+  };
 
   return (
-    <div className="card">
-      <div className="row" style={{alignItems:'center', justifyContent:'space-between'}}>
-        <h3 style={{margin:0}}>Interactive Voice (Premium)</h3>
-        <span className={`pill ${active?'success':''}`}>{active?'Live':'Idle'}</span>
-      </div>
-      <div className="row" style={{marginTop:8}}>
-        {!active ? (
-          <button className="btn primary" onClick={start} disabled={busy}>
-            {busy? <span className="spinner"/> : 'Start Voice Session'}
-          </button>
-        ) : (
-          <button className="btn" onClick={stop}>End Session</button>
-        )}
-        <button className="btn" onClick={quickMarkets} disabled={busy}>Fetch Market Snapshot</button>
-        <button className="btn" onClick={askSearch} disabled={busy}>Web Search Q</button>
-      </div>
-      <div className="small" style={{marginTop:8}}>Tip: On iOS/Safari, tap Start then unmute if playback is blocked.</div>
-      <audio ref={audioRef} className="audio" autoPlay controls />
-      {lastTool && <div className="small" style={{marginTop:8}}>Last fetched: {lastTool.slice(0,160)}…</div>}
+    <div>
+      <button
+        onClick={startVoiceSession}
+        className="rounded bg-blue-500 px-4 py-2 text-white"
+      >
+        Start Voice Session
+      </button>
+      <p>{status}</p>
     </div>
   );
 }
-

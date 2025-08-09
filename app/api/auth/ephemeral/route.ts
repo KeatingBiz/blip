@@ -1,51 +1,68 @@
 // app/api/auth/ephemeral/route.ts
 import { NextRequest } from 'next/server';
-import { createRealtimeSession } from '@/lib/openai';
 
 export const runtime = 'nodejs';
 
+function json(data: any, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 export async function GET() {
   try {
-    // You can later compute 'mode' = 'realtime' | 'standard' here
-    const voice = process.env.REALTIME_VOICE || 'verse';
-    const model = process.env.REALTIME_MODEL || 'gpt-4o-realtime-preview-2024-12-17';
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return json({ error: 'Missing OPENAI_API_KEY' }, 500);
 
-    // Create short-lived client secret for the browser to connect directly
-    const session = await createRealtimeSession({
-      voice,
-      model,
-      instructions:
-        'You are a concise, friendly assistant. Keep answers short (1–2 sentences) unless asked.',
-      modalities: ['audio', 'text'],
+    const model = process.env.REALTIME_MODEL || 'gpt-4o-realtime-preview-2024-12-17';
+    const voice = process.env.REALTIME_VOICE || 'verse';
+
+    // Call OpenAI REST directly to create a short-lived Realtime session
+    const resp = await fetch('https://api.openai.com/v1/realtime/sessions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        voice,
+        modalities: ['audio', 'text'],
+        instructions:
+          'You are a concise, friendly assistant. Keep answers short (1–2 sentences) unless asked.',
+        // You can add: 'audio_format': 'pcm16' if you want raw PCM. WebRTC flow doesn’t need it.
+      }),
     });
 
-    // session.client_secret?.value is what the client uses as a bearer token
-    const token = (session as any)?.client_secret?.value;
+    const data = await resp.json();
+    if (!resp.ok) {
+      return json({ error: data?.error?.message || 'Failed to create session', raw: data }, resp.status);
+    }
+
+    const token: string | undefined = data?.client_secret?.value;
     if (!token) {
-      return new Response(
-        JSON.stringify({ error: 'Missing client_secret from session.' }),
-        { status: 500, headers: { 'content-type': 'application/json' } }
-      );
+      return json({ error: 'No client_secret returned from OpenAI', raw: data }, 500);
     }
 
     const url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
 
-    // For now always return 'realtime'. Later you can return 'standard' to fall back
-    return new Response(
-      JSON.stringify({ ok: true, mode: 'realtime', token, url, model, voice }),
-      { headers: { 'content-type': 'application/json' } }
-    );
+    // Return both 'token' and 'client_secret' for compatibility with either client shape
+    return json({
+      ok: true,
+      mode: 'realtime',
+      token,
+      client_secret: token,
+      url,
+      model,
+      voice,
+    });
   } catch (err: any) {
     console.error('ephemeral error', err);
-    return new Response(
-      JSON.stringify({ error: err?.message || 'Failed to create session' }),
-      { status: 500, headers: { 'content-type': 'application/json' } }
-    );
+    return json({ error: err?.message || 'Failed to create session' }, 500);
   }
 }
 
-// Optional POST mirror (some clients use POST)
-export async function POST(req: NextRequest) {
+export async function POST(_req: NextRequest) {
   return GET();
 }
-

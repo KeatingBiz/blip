@@ -2,18 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const COST_PER_MIN_REALTIME = 0.006; // tweak to your latest rate ($/min)
+// Update this to whatever you're actually seeing (~0.30 is common for 4o-realtime)
+const COST_PER_MIN_REALTIME = 0.30; // $/min
+const AUTO_STOP_SEC = 20;           // hard cap for test sessions
 
 export default function VoiceAgent() {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const micRef = useRef<MediaStream | null>(null);
-  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const tickRef = useRef<number | null>(null);
   const startedAtRef = useRef<number | null>(null);
 
-  const [status, setStatus] = useState<"idle" | "connecting" | "live" | "stopped" | "error">(
-    "idle"
-  );
+  const [status, setStatus] = useState<"idle" | "connecting" | "live" | "stopped" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
   const [seconds, setSeconds] = useState(0);
   const [estCost, setEstCost] = useState(0);
@@ -25,7 +25,7 @@ export default function VoiceAgent() {
     setEstCost(0);
 
     try {
-      // 1) Get ephemeral token+URL from your API
+      // 1) Get ephemeral token + URL from server
       const r = await fetch("/api/auth/ephemeral");
       const data = await r.json();
       if (!r.ok || !data?.ok) throw new Error(data?.error || "Failed to get ephemeral token");
@@ -33,36 +33,32 @@ export default function VoiceAgent() {
       const token = data.token || data.client_secret;
       const url = data.url; // e.g. https://api.openai.com/v1/realtime?model=...
 
-      // 2) Get microphone
+      // 2) Mic
       const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
       micRef.current = mic;
 
-      // 3) Create RTCPeerConnection
+      // 3) PeerConnection
       const pc = new RTCPeerConnection();
       pcRef.current = pc;
 
-      // 4) Remote audio -> play in hidden audio tag
+      // 4) Remote audio -> hidden audio tag in the DOM
       const remote = new MediaStream();
       pc.ontrack = (e) => {
         remote.addTrack(e.track);
       };
-      if (!remoteAudioRef.current) {
-        const el = document.createElement("audio");
-        el.autoplay = true;
-        el.playsInline = true;
-        el.className = "hidden";
-        document.body.appendChild(el);
-        remoteAudioRef.current = el;
+      if (audioRef.current) {
+        audioRef.current.srcObject = remote;
+        // The Start button click counts as a user gesture, so autoplay is allowed.
+        audioRef.current.play().catch(() => {});
       }
-      remoteAudioRef.current.srcObject = remote;
 
-      // 5) Send mic tracks
+      // 5) Send mic
       mic.getTracks().forEach((t) => pc.addTrack(t, mic));
 
-      // 6) (Optional) data channel
+      // 6) Optional: data channel
       pc.createDataChannel("oai-events");
 
-      // 7) Offer/Answer (SDP) with OpenAI Realtime
+      // 7) Offer/Answer (SDP)
       const offer = await pc.createOffer({ offerToReceiveAudio: true });
       await pc.setLocalDescription(offer);
 
@@ -79,9 +75,16 @@ export default function VoiceAgent() {
       const answer = await sdpResp.text();
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
 
-      // 8) We’re live
+      // 8) Live + timers
       setStatus("live");
       startedAtRef.current = Date.now();
+
+      // auto-stop after N seconds (testing)
+      window.setTimeout(() => {
+        if (pcRef.current) stop();
+      }, AUTO_STOP_SEC * 1000);
+
+      // ticker
       tickRef.current = window.setInterval(() => {
         if (!startedAtRef.current) return;
         const elapsedMs = Date.now() - startedAtRef.current;
@@ -93,17 +96,15 @@ export default function VoiceAgent() {
       console.error(e);
       setError(e?.message || "Failed to start session");
       setStatus("error");
-      await stop(); // ensure cleanup
+      await stop();
     }
   }
 
   async function stop() {
-    // Stop ticker
     if (tickRef.current) {
       clearInterval(tickRef.current);
       tickRef.current = null;
     }
-    // Close peer connection
     if (pcRef.current) {
       try {
         pcRef.current.getSenders().forEach((s) => s.track && s.track.stop());
@@ -113,7 +114,6 @@ export default function VoiceAgent() {
       } catch {}
       pcRef.current = null;
     }
-    // Stop mic
     if (micRef.current) {
       try {
         micRef.current.getTracks().forEach((t) => t.stop());
@@ -125,7 +125,6 @@ export default function VoiceAgent() {
 
   useEffect(() => {
     return () => {
-      // cleanup on unmount
       stop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -145,9 +144,7 @@ export default function VoiceAgent() {
             </span>
           </div>
           <div>Elapsed: {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</div>
-          <div>
-            Est. cost: ${estCost.toFixed(4)} @ ${COST_PER_MIN_REALTIME.toFixed(3)}/min
-          </div>
+          <div>Est. cost: ${estCost.toFixed(4)} @ ${COST_PER_MIN_REALTIME.toFixed(2)}/min</div>
           {error && <div className="mt-1 text-red-600">Error: {error}</div>}
         </div>
 
@@ -171,7 +168,11 @@ export default function VoiceAgent() {
           </button>
         </div>
       </div>
+
+      {/* Hidden audio sink for remote stream */}
+      <audio ref={audioRef} autoPlay className="hidden" />
     </div>
   );
 }
+
 
